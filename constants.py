@@ -1,6 +1,6 @@
 # Netowrk Config
 BUFFER_SIZE = 4096 
-DEFAULT_PORT = 8080
+DEFAULT_PORT = 12345
 BROADCAST_ADDR = "255.255.255.255"
 
 # For reliablity layer
