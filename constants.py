@@ -1,13 +1,13 @@
 # Netowrk Config
 BUFFER_SIZE = 4096 
-DEFAULT_PORT = 12345
+DEFAULT_PORT = 8080
 BROADCAST_ADDR = "255.255.255.255"
 
 # For reliablity layer
 TIMEOUT_SECONDS = 0.5  # 500 milliseconds
 MAX_RETRIES = 3
 
-# Message types (stored in variables)
+# Message types/value (stored in variables)
 MSG_HANDSHAKE_REQUEST = "HANDSHAKE_REQUEST"
 MSG_HANDSHAKE_RESPONSE = "HANDSHAKE_RESPONSE"
 MSG_SPECTATOR_REQUEST  = "SPECTATOR_REQUEST" 
