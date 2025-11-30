@@ -3,7 +3,7 @@ from pokemon_manager import PokemonManager
 
 class GameEngine:
     def __init__(self):
-        # 1. Connect to the Data Source
+        # 1. Connect to the Data Source.
         self.pokemon_manager = PokemonManager()
         
         # 2. Initialize State
