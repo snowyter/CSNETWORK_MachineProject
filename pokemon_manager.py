@@ -127,7 +127,7 @@ class PokemonManager:
             return None
 
         # Determine Stats (Physical vs Special)
-        level = 50
+        level = 50 # Standard level
         power = move['power']
         
         if move['category'] == "Physical":
@@ -142,7 +142,7 @@ class PokemonManager:
         base_damage = ((2 * level / 5 + 2) * power * (a_stat / d_stat)) / 50 + 2
 
         # Modifiers
-        # STAB
+        # STAB (Same Type Attack Bonus, same type = 50% increase, not same = no increase)
         stab = 1.5 if move['type'] in [attacker['type1'], attacker['type2']] else 1.0
         
         # Type Effectiveness
