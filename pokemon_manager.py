@@ -4,19 +4,15 @@ import math
 import os
 
 class PokemonManager:
-    def __init__(self, pokemon_csv='pokemon.csv', moves_csv='moves.csv'):
+    def __init__(self, pokemon_csv='pokemon.csv'):
         self.pokedex = {}
         self.moves = {} 
         
         # Load Pokemon Stats
         self.load_pokemon_data(pokemon_csv)
         
-        # Try to load moves from CSV, otherwise use default
-        if os.path.exists(moves_csv):
-            self.load_moves_from_csv(moves_csv)
-        else:
-            print("Moves CSV not found. Using default hardcoded moves.")
-            self.initialize_default_moves()
+        # Initialize moves
+        self.initialize_default_moves()
         
         # Simple Type Effectiveness Chart (Attacker -> Defender)
         self.type_chart = {
@@ -55,6 +51,7 @@ class PokemonManager:
                         type2 = None
 
                     self.pokedex[name] = {
+                        "name": name,
                         "type1": row['type1'].strip(),
                         "type2": type2,
                         "hp": int(row['hp']),

@@ -1,6 +1,8 @@
 import constants
 import socket
 import threading
+import queue
+import time
 
 class NetworkManager:
     def __init__(self, port = constants.DEFAULT_PORT):
@@ -14,6 +16,9 @@ class NetworkManager:
         # Storage reliability
         self.sequence_number = 0  # To track message order 
         self.peer_address = None  # To remember who we are playing against
+        
+        self.incoming_messages = queue.Queue()
+        self.pending_acks = {} # seq_num -> {packet, timestamp, retries}
 
         self.message_callback = None #store the function we cal when msg arrives
 
@@ -104,12 +109,24 @@ class NetworkManager:
                 if not message:
                     continue # Skip malformed packets
 
+                # If we don't have a peer yet, and this is a valid message, set it (Host logic)
+                if self.peer_address is None:
+                    self.peer_address = addr
+
+                # Handle ACK
+                if message.get(constants.KEY_MSG_TYPE) == constants.MSG_ACK:
+                    self.handle_ack(message)
+                    continue
+
                 # RELIABILITY: Send ACK immediately if the message has a sequence number
-                if constants.KEY_SEQ_NUM in message and message.get(constants.KEY_MSG_TYPE) != constants.MSG_ACK:
+                if constants.KEY_SEQ_NUM in message:
                     seq_num = message[constants.KEY_SEQ_NUM]
                     self.send_ack(seq_num, addr)
 
-                # Pass the message to the Main Game Loop
+                # Add to queue for main thread to process
+                self.incoming_messages.put(message)
+
+                # Pass the message to the Main Game Loop (Legacy callback support)
                 if self.message_callback:
                     self.message_callback(message, addr)
 
@@ -140,3 +157,74 @@ class NetworkManager:
         Main.py calls this to say: "When you get a message, call this function!"
         """
         self.message_callback = callback_function
+
+    def receive_message(self):
+        """
+        Non-blocking retrieval of the next message from the queue.
+        Returns None if queue is empty.
+        """
+        try:
+            return self.incoming_messages.get_nowait()
+        except queue.Empty:
+            return None
+
+    def send_reliable(self, message_type, data=None):
+        """
+        Sends a message and tracks it for retransmission until ACKed.
+        """
+        if data is None:
+            data = {}
+            
+        # Construct packet
+        packet = self.construct_message(message_type, data)
+        
+        # Send immediately
+        if self.peer_address:
+            self.sock.sendto(packet, self.peer_address)
+            print(f"Sent reliable {message_type} to {self.peer_address}")
+        else:
+            print("Error: No peer address set!")
+            return
+
+        # Store for retransmission
+        # We need to extract the sequence number we just generated
+        # construct_message increments self.sequence_number, so current value is the one used.
+        seq_num = str(self.sequence_number)
+        
+        self.pending_acks[seq_num] = {
+            "packet": packet,
+            "timestamp": time.time(),
+            "retries": 0
+        }
+
+    def handle_ack(self, message):
+        """
+        Called when we receive an ACK message.
+        Removes the corresponding message from pending_acks.
+        """
+        ack_num = message.get(constants.KEY_ACK_NUM)
+        if ack_num in self.pending_acks:
+            # print(f"ACK received for {ack_num}")
+            del self.pending_acks[ack_num]
+
+    def check_resend(self):
+        """
+        Called periodically to resend lost packets.
+        """
+        current_time = time.time()
+        to_remove = []
+
+        for seq_num, info in self.pending_acks.items():
+            if current_time - info["timestamp"] > constants.TIMEOUT_SECONDS:
+                if info["retries"] < constants.MAX_RETRIES:
+                    # Resend
+                    print(f"Resending packet {seq_num}...")
+                    self.sock.sendto(info["packet"], self.peer_address)
+                    info["timestamp"] = current_time
+                    info["retries"] += 1
+                else:
+                    print(f"Max retries reached for packet {seq_num}. Giving up.")
+                    to_remove.append(seq_num)
+        
+        for seq_num in to_remove:
+            del self.pending_acks[seq_num]

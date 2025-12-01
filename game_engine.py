@@ -2,9 +2,10 @@ import constants
 from pokemon_manager import PokemonManager
 
 class GameEngine:
-    def __init__(self):
+    def __init__(self, pokemon_manager, network_manager):
         # 1. Connect to the Data Source.
-        self.pokemon_manager = PokemonManager()
+        self.pokemon_manager = pokemon_manager
+        self.network_manager = network_manager
         
         # 2. Initialize State
         self.state = constants.STATE_SETUP
@@ -42,10 +43,58 @@ class GameEngine:
             return True
         return False
     
+    def start_battle(self, is_host):
+        """
+        Decides turn order based on Speed.
+        """
+        my_spd = self.my_pokemon['speed']
+        opp_spd = self.opponent_pokemon['speed']
+        
+        if my_spd > opp_spd:
+            self.is_my_turn = True
+        elif my_spd < opp_spd:
+            self.is_my_turn = False
+        else:
+            # Speed tie: Host goes first
+            self.is_my_turn = is_host
+            
+        print(f"Battle Started! My Turn: {self.is_my_turn}")
+        if self.is_my_turn:
+            print("Use /attack [MoveName] to attack!")
+        else:
+            print("Waiting for opponent...")
+        self.state = constants.STATE_WAITING_FOR_MOVE
+
+    def select_move(self, move_name):
+        """
+        Called when user types /attack [MoveName]
+        """
+        if self.state != constants.STATE_WAITING_FOR_MOVE:
+            print("Cannot move right now.")
+            return
+
+        if not self.is_my_turn:
+            print("It is not your turn!")
+            return
+
+        # Validate move
+        move = self.pokemon_manager.get_move(move_name)
+        if not move:
+            print(f"Unknown move: {move_name}")
+            print(f"Available moves: {list(self.pokemon_manager.moves.keys())}")
+            return
+
+        self.current_move = move_name
+        print(f"You chose {move_name}. Waiting for opponent to acknowledge...")
+        
+        # Send Announce
+        self.network_manager.send_reliable(constants.MSG_ATTACK_ANNOUNCE, {
+            constants.KEY_MOVE_NAME: move_name
+        })
+
     def process_message(self, message):
         """
         The Main Brain. Decides what to do with a network message.
-        Returns a response dictionary if we need to send something back, or None.
         """
         msg_type = message.get(constants.KEY_MSG_TYPE)
         
@@ -56,11 +105,9 @@ class GameEngine:
             opp_name = message.get(constants.KEY_POKEMON_NAME)
             self.set_opponent_pokemon(opp_name)
             # If both have picked, the game is ready.
-            # (In a real implementation, you'd check who goes first here based on speed/coin toss)
             if self.my_pokemon and self.opponent_pokemon:
                 self.state = constants.STATE_WAITING_FOR_MOVE
-                print("Battle Started! Waiting for moves.")
-            return None
+                print("Battle Ready. Waiting for start_battle().")
 
         # 2. ATTACK PHASE: Opponent is attacking us
         elif msg_type == constants.MSG_ATTACK_ANNOUNCE:
@@ -68,17 +115,36 @@ class GameEngine:
             print(f"Opponent announced attack: {move_name}")
             
             # We must acknowledge this to move to calculation
-            # Return a Defense Announce message to be sent by NetworkManager
-            return {
-                constants.KEY_MSG_TYPE: constants.MSG_DEFENSE_ANNOUNCE
-            }
+            # Send Defense Announce
+            self.network_manager.send_reliable(constants.MSG_DEFENSE_ANNOUNCE, {})
 
         # 3. DEFENSE PHASE: Opponent acknowledged OUR attack
         elif msg_type == constants.MSG_DEFENSE_ANNOUNCE:
             print("Opponent is ready. Calculating damage...")
             self.state = constants.STATE_PROCESSING_TURN
-            # Trigger damage calculation (See Segment 3)
-            return self.execute_turn_logic()
+            # Trigger damage calculation
+            report = self.execute_turn_logic()
+            self.network_manager.send_reliable(constants.MSG_CALCULATION_REPORT, report)
+            
+            # End of my turn
+            self.is_my_turn = False
+            self.state = constants.STATE_WAITING_FOR_MOVE
+            print("Turn ended. Waiting for opponent...")
+
+        # 4. REPORT PHASE: Receiving damage report
+        elif msg_type == constants.MSG_CALCULATION_REPORT:
+            damage = int(message.get(constants.KEY_DMG_DEALT))
+            move_name = message.get(constants.KEY_MOVE_NAME)
+            
+            # Apply damage to ME
+            self.my_pokemon['hp'] -= damage
+            print(f"Opponent used {move_name} and dealt {damage} damage!")
+            print(f"My HP: {self.my_pokemon['hp']}")
+            
+            # It is now my turn
+            self.is_my_turn = True
+            self.state = constants.STATE_WAITING_FOR_MOVE
+            print("Your Turn! Use /attack [MoveName]")
 
         return None
     
