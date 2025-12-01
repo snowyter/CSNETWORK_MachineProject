@@ -585,7 +585,8 @@ class GameEngine:
         else:
             print("Turn ended.")
 
-        self.state = constants.STATE_WAITING_FOR_MOVE
+        if self.state != constants.STATE_GAME_OVER:
+            self.state = constants.STATE_WAITING_FOR_MOVE
 
     def send_game_over(self, winner, loser):
         self.network_manager.send_reliable(constants.MSG_GAME_OVER, {

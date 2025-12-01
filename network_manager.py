@@ -42,6 +42,15 @@ class NetworkManager:
             self.spectators.append(address)
             print(f"Added spectator: {address}")
 
+    def reset_connection(self):
+        """Resets connection state for a new game."""
+        self.peer_address = None
+        self.sequence_number = 0
+        self.pending_acks.clear()
+        self.received_history.clear()
+        self.spectators.clear()
+        print("NetworkManager connection state reset.")
+
     def construct_message(self, message_type, data=None):
         """
         Takes a message type and a dictionary of data, 
