@@ -19,6 +19,7 @@ class NetworkManager:
         # Storage reliability
         self.sequence_number = 0  # To track message order 
         self.peer_address = None  # To remember who we are playing against
+        self.spectators = [] # List of spectator addresses
         
         self.incoming_messages = queue.Queue()
         self.pending_acks = {} # seq_num -> {packet, timestamp, retries}
@@ -35,6 +36,11 @@ class NetworkManager:
 
     def set_peer(self, ip_address):
         self.peer_address = (ip_address, constants.DEFAULT_PORT)
+
+    def add_spectator(self, address):
+        if address not in self.spectators:
+            self.spectators.append(address)
+            print(f"Added spectator: {address}")
 
     def construct_message(self, message_type, data=None):
         """
@@ -220,6 +226,13 @@ class NetworkManager:
         else:
             print("Error: No peer address set!")
             return
+            
+        # Also send to spectators (Best Effort)
+        for spec_addr in self.spectators:
+            try:
+                self.sock.sendto(packet, spec_addr)
+            except:
+                pass
 
         # Store for retransmission
         # We need to extract the sequence number we just generated
