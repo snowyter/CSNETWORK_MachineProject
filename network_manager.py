@@ -9,6 +9,9 @@ class NetworkManager:
 
         # Creating UDP socket
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        
+        # Enable Broadcast
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
         # Binding the socket to the port
         self.sock.bind(('0.0.0.0', port))
@@ -19,6 +22,7 @@ class NetworkManager:
         
         self.incoming_messages = queue.Queue()
         self.pending_acks = {} # seq_num -> {packet, timestamp, retries}
+        self.received_history = set() # (addr, seq_num)
 
         self.message_callback = None #store the function we cal when msg arrives
 
@@ -43,9 +47,10 @@ class NetworkManager:
         # Start with the mandatory message_type 
         msg_str = f"{constants.KEY_MSG_TYPE}: {message_type}\n"
         
-        # Add the sequence number (for reliability)
-        self.sequence_number += 1
-        msg_str += f"{constants.KEY_SEQ_NUM}: {self.sequence_number}\n"
+        # Add the sequence number (for reliability), SKIP for ACKs
+        if message_type != constants.MSG_ACK:
+            self.sequence_number += 1
+            msg_str += f"{constants.KEY_SEQ_NUM}: {self.sequence_number}\n"
         
         # Add all other data fields
         for key, value in data.items():
@@ -71,6 +76,17 @@ class NetworkManager:
             print(f"Sent {message_type} to {self.peer_address}")
         except Exception as e:
             print(f"Error sending message: {e}")
+
+    def send_broadcast(self, message_type, data=None):
+        """
+        Sends a message to the broadcast address.
+        """
+        packet = self.construct_message(message_type, data)
+        try:
+            self.sock.sendto(packet, (constants.BROADCAST_ADDR, constants.DEFAULT_PORT))
+            print(f"Sent Broadcast {message_type}")
+        except Exception as e:
+            print(f"Error sending broadcast: {e}")
 
     def parse_packet(self, data_bytes):
         """
@@ -109,9 +125,17 @@ class NetworkManager:
                 if not message:
                     continue # Skip malformed packets
 
+                # Ignore own broadcasts (basic check)
+                # Note: getting own IP is tricky, so we might receive our own broadcast.
+                # The game engine should handle ignoring own messages if sender_name matches.
+
                 # If we don't have a peer yet, and this is a valid message, set it (Host logic)
-                if self.peer_address is None:
-                    self.peer_address = addr
+                # BUT only if it's a handshake or we are in a mode that accepts new peers
+                # For now, we leave this logic here, but Main might override peer_address
+                if self.peer_address is None and message.get(constants.KEY_MSG_TYPE) == constants.MSG_HANDSHAKE_REQUEST:
+                    # We don't auto-set peer_address here anymore for security/logic reasons, 
+                    # but we pass it to callback so Main can decide.
+                    pass
 
                 # Handle ACK
                 if message.get(constants.KEY_MSG_TYPE) == constants.MSG_ACK:
@@ -122,8 +146,18 @@ class NetworkManager:
                 if constants.KEY_SEQ_NUM in message:
                     seq_num = message[constants.KEY_SEQ_NUM]
                     self.send_ack(seq_num, addr)
+                    
+                    # DUPLICATE CHECK
+                    if (addr, seq_num) in self.received_history:
+                        # print(f"Ignoring duplicate message {seq_num} from {addr}")
+                        continue
+                    
+                    # Mark as seen
+                    self.received_history.add((addr, seq_num))
 
                 # Add to queue for main thread to process
+                # We attach the address to the message so logic knows who sent it
+                message['source_addr'] = addr
                 self.incoming_messages.put(message)
 
                 # Pass the message to the Main Game Loop (Legacy callback support)
@@ -149,6 +183,7 @@ class NetworkManager:
             constants.KEY_ACK_NUM: seq_number
         }
         # We use construct_message manually here to avoid recursive ACKs
+        # construct_message now handles skipping SEQ_NUM for ACKs
         packet = self.construct_message(constants.MSG_ACK, ack_data)
         self.sock.sendto(packet, target_addr)
 
@@ -214,7 +249,8 @@ class NetworkManager:
         current_time = time.time()
         to_remove = []
 
-        for seq_num, info in self.pending_acks.items():
+        # Create a list of items to iterate over to avoid "dictionary changed size" error
+        for seq_num, info in list(self.pending_acks.items()):
             if current_time - info["timestamp"] > constants.TIMEOUT_SECONDS:
                 if info["retries"] < constants.MAX_RETRIES:
                     # Resend
@@ -225,6 +261,12 @@ class NetworkManager:
                 else:
                     print(f"Max retries reached for packet {seq_num}. Giving up.")
                     to_remove.append(seq_num)
+                    # Notify connection lost
+                    self.incoming_messages.put({
+                        constants.KEY_MSG_TYPE: "CONNECTION_LOST",
+                        "reason": "Max retries reached"
+                    })
         
         for seq_num in to_remove:
-            del self.pending_acks[seq_num]
+            if seq_num in self.pending_acks:
+                del self.pending_acks[seq_num]

@@ -2,6 +2,8 @@ import threading
 import time
 import sys
 import socket
+import random
+import base64
 
 # Import your modules
 import constants
@@ -25,7 +27,9 @@ class PokemonGameClient:
         # 3. State Flags
         self.running = True
         self.is_host = False
+        self.is_spectator = False
         self.input_thread = None
+        self.player_name = "Player"
 
     def get_local_ip(self):
         """Helper to print your IP so your friend can join."""
@@ -42,8 +46,11 @@ class PokemonGameClient:
     def setup_connection(self):
         """Phase 1: Connect two computers via Handshake."""
         print(f"\nYour IP: {self.get_local_ip()} | Listening on Port: {self.my_port}")
+        self.player_name = input("Enter your name: ") or "Player"
+        
         print("1. Host a Game")
         print("2. Join a Game")
+        print("3. Spectate a Game")
         
         choice = input("Select option: ")
         
@@ -54,45 +61,69 @@ class PokemonGameClient:
             
         elif choice == '2':
             self.is_host = False
-            # 1. Get Target IP
-            target_ip = input("Enter Host IP (use 127.0.0.1 for local): ")
-            if not target_ip: target_ip = "127.0.0.1"
+            self.join_game(is_spectator=False)
+            
+        elif choice == '3':
+            self.is_host = False
+            self.is_spectator = True
+            self.join_game(is_spectator=True)
 
-            # 2. Get Target Port (Important if testing locally)
-            target_port_input = input(f"Enter Host Port (default {constants.DEFAULT_PORT}): ")
-            target_port = int(target_port_input) if target_port_input else constants.DEFAULT_PORT
-            
-            # 3. Setup peer immediately
-            self.net.set_peer(target_ip)
-            # Override the default port in NetworkManager if user typed a specific one
-            self.net.peer_address = (target_ip, target_port)
-            
-            # 4. Send Handshake
-            print(f"\n[JOIN] Sending handshake to {target_ip}:{target_port}...")
-            self.net.send_reliable(constants.MSG_HANDSHAKE_REQUEST, {
-                "greeting": "Hello from Challenger"
-            })
+    def join_game(self, is_spectator):
+        # 1. Get Target IP
+        target_ip = input("Enter Host IP (use 127.0.0.1 for local): ")
+        if not target_ip: target_ip = "127.0.0.1"
+
+        # 2. Get Target Port (Important if testing locally)
+        target_port_input = input(f"Enter Host Port (default {constants.DEFAULT_PORT}): ")
+        target_port = int(target_port_input) if target_port_input else constants.DEFAULT_PORT
+        
+        # 3. Setup peer immediately
+        self.net.set_peer(target_ip)
+        self.net.peer_address = (target_ip, target_port)
+        
+        # 4. Send Handshake
+        msg_type = constants.MSG_SPECTATOR_REQUEST if is_spectator else constants.MSG_HANDSHAKE_REQUEST
+        print(f"\n[JOIN] Sending {msg_type} to {target_ip}:{target_port}...")
+        
+        self.net.send_reliable(msg_type, {
+            constants.KEY_SENDER: self.player_name
+        })
             
     def setup_game_data(self):
         """Phase 2: Pick Pokemon and exchange stats."""
+        if self.is_spectator:
+            print("[SPECTATOR] Waiting for battle to start...")
+            return
+
         # Loop until valid pokemon selected
         while True:
             p_name = input("\nChoose your Pokemon (e.g. Bulbasaur): ").strip()
             data = self.poke.get_pokemon(p_name)
             if data:
-                self.engine.set_my_pokemon(p_name)
                 break
             else:
                 print("Invalid Pokemon name! Check pokemon.csv for exact spelling.")
+        
+        # Stat Boost Allocation
+        print("\nAllocate 10 Stat Boosts (Sp. Atk and Sp. Def).")
+        while True:
+            try:
+                sp_atk = int(input("Sp. Atk Boosts (0-10): "))
+                sp_def = int(input("Sp. Def Boosts (0-10): "))
+                if sp_atk + sp_def <= 10:
+                    break
+                print("Total must be <= 10!")
+            except ValueError:
+                print("Invalid number.")
+
+        self.engine.set_my_pokemon(p_name, sp_atk, sp_def)
 
         # Send BATTLE_SETUP to opponent
         print("[SETUP] Sending Pokemon data to opponent...")
         setup_data = {
             constants.KEY_POKEMON_NAME: p_name,
-            "hp": data['hp'],
-            "attack": data['attack'],
-            "defense": data['defense'],
-            "speed": data['speed']
+            constants.KEY_STAT_BOOSTS: f"{sp_atk},{sp_def}",
+            constants.KEY_COMM_MODE: constants.MODE_P2P # Default to P2P for now
         }
         self.net.send_reliable(constants.MSG_BATTLE_SETUP, setup_data)
         
@@ -103,7 +134,14 @@ class PokemonGameClient:
             time.sleep(0.1)
             
         # Once we have opponent data, start the game logic
-        self.engine.start_battle(self.is_host)
+        # Note: start_battle is called after Handshake Response (for seed) AND Setup
+        # But we need to make sure we have the seed.
+        if self.engine.seed is not None:
+             self.engine.start_battle(self.is_host, self.engine.seed)
+        else:
+            # Wait for seed if we are joiner? Host generates it.
+            # Host sets seed in handshake response handling.
+            pass
 
     def input_loop(self):
         """
@@ -111,13 +149,11 @@ class PokemonGameClient:
         Runs in background to capture typing without freezing the network.
         """
         print("\n--- COMMANDS ---")
-        print("/attack [MoveName] -> Use a move (e.g. /attack Thunderbolt)")
-        
-        print("Available Moves:")
-        for move, info in self.poke.moves.items():
-            print(f"  - {move} ({info['type']})")
-
+        if not self.is_spectator:
+            print("/attack [MoveName] -> Use a move")
+            print("/attack [MoveName] boost -> Use a move with boost")
         print("/chat [Message]    -> Send text chat")
+        print("/sticker [Base64]  -> Send sticker")
         print("/quit              -> Exit game")
         print("----------------")
         
@@ -131,19 +167,35 @@ class PokemonGameClient:
                     print("Quitting...")
                     break
                     
-                elif cmd.startswith("/attack "):
-                    move_name = cmd.split(" ", 1)[1]
-                    self.engine.select_move(move_name)
+                elif cmd.startswith("/attack ") and not self.is_spectator:
+                    parts = cmd.split(" ")
+                    move_name = parts[1]
+                    use_boost = "boost" in parts
+                    self.engine.select_move(move_name, use_boost)
                     
                 elif cmd.startswith("/chat "):
                     msg_text = cmd.split(" ", 1)[1]
                     self.net.send_reliable(constants.MSG_CHAT_MESSAGE, {
+                        constants.KEY_SENDER: self.player_name,
+                        constants.KEY_CONTENT_TYPE: constants.CONTENT_TYPE_TEXT,
                         constants.KEY_MSG_TEXT: msg_text
                     })
                     print(f"[YOU]: {msg_text}")
+                    
+                elif cmd.startswith("/sticker "):
+                    sticker_data = cmd.split(" ", 1)[1]
+                    self.net.send_reliable(constants.MSG_CHAT_MESSAGE, {
+                        constants.KEY_SENDER: self.player_name,
+                        constants.KEY_CONTENT_TYPE: constants.CONTENT_TYPE_STICKER,
+                        constants.KEY_STICKER_DATA: sticker_data
+                    })
+                    print(f"[YOU]: Sent a sticker.")
                 
                 else:
-                    print("Unknown command. Use /attack or /chat")
+                    if self.is_spectator and cmd.startswith("/attack"):
+                        print("Spectators cannot attack!")
+                    else:
+                        print("Unknown command.")
             
             except EOFError:
                 break
@@ -161,20 +213,46 @@ class PokemonGameClient:
             
             # --- HANDSHAKE HANDLING (Connection Phase) ---
             if msg_type == constants.MSG_HANDSHAKE_REQUEST:
-                print(f"[NET] Received Handshake Request from {self.net.peer_address}")
-                # If we are Host, we must lock onto this peer now
+                print(f"[NET] Received Handshake Request from {msg.get('source_addr')}")
                 if self.is_host:
-                    # peer_address is auto-set inside receive_message for the first packet
-                    self.net.send_reliable(constants.MSG_HANDSHAKE_RESPONSE, {"status": "OK"})
-                    print("Connected! Please pick your Pokemon.")
+                    # Set peer
+                    self.net.peer_address = msg.get('source_addr')
+                    # Generate Seed
+                    seed = random.randint(1000, 9999)
+                    self.engine.seed = seed
+                    # Send Response
+                    self.net.send_reliable(constants.MSG_HANDSHAKE_RESPONSE, {
+                        constants.KEY_SEED: seed,
+                        "status": "OK"
+                    })
+                    print(f"Connected! Seed: {seed}. Please pick your Pokemon.")
+                    # Host can start battle logic setup now
+                    self.engine.start_battle(True, seed)
+
+            elif msg_type == constants.MSG_SPECTATOR_REQUEST:
+                print(f"[NET] Spectator joined from {msg.get('source_addr')}")
+                # We can add them to a list of spectators if we want to broadcast to them
+                # For now, just ACK (handled by net manager) and maybe send current state?
+                # The RFC doesn't specify state sync for spectators, just they receive messages.
+                pass
 
             elif msg_type == constants.MSG_HANDSHAKE_RESPONSE:
-                print("[NET] Handshake Accepted! Connected.")
+                seed = msg.get(constants.KEY_SEED)
+                print(f"[NET] Handshake Accepted! Seed: {seed}")
+                self.engine.seed = int(seed)
+                # Joiner can start battle logic setup now (waiting for setup data)
+                self.engine.start_battle(False, seed)
 
             # --- CHAT HANDLING ---
             elif msg_type == constants.MSG_CHAT_MESSAGE:
-                text = msg.get(constants.KEY_MSG_TEXT)
-                print(f"\n[OPPONENT]: {text}")
+                sender = msg.get(constants.KEY_SENDER, "Unknown")
+                content_type = msg.get(constants.KEY_CONTENT_TYPE)
+                
+                if content_type == constants.CONTENT_TYPE_STICKER:
+                    print(f"\n[{sender}]: [STICKER RECEIVED]")
+                else:
+                    text = msg.get(constants.KEY_MSG_TEXT)
+                    print(f"\n[{sender}]: {text}")
 
             # --- GAME ENGINE HANDLING ---
             else:
@@ -188,10 +266,25 @@ class PokemonGameClient:
         self.setup_connection()
         
         # Wait for handshake to complete (simple check: do we have a peer?)
-        while self.net.peer_address is None:
-            self.network_loop_step()
-            time.sleep(0.1)
-            
+        # For Host: waits for Request. For Joiner: waits for Response.
+        # Actually, Host waits in setup_game_data loop? No.
+        # We need a loop here to wait for connection before moving to setup.
+        
+        print("Waiting for connection...")
+        while self.net.peer_address is None and not self.is_host:
+             self.network_loop_step()
+             time.sleep(0.1)
+             
+        # If host, we might wait until we get a handshake request in the main loop?
+        # But setup_game_data assumes we are connected?
+        # Let's allow Host to pick pokemon while waiting?
+        # No, better to wait for connection.
+        
+        if self.is_host:
+             while self.net.peer_address is None:
+                 self.network_loop_step()
+                 time.sleep(0.1)
+
         # Step 2: Pick Pokemon
         self.setup_game_data()
         
