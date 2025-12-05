@@ -69,3 +69,27 @@ We have divided the implementation tasks equally to ensure a balanced contributi
 
 ```bash
 pip install flask flask_socketio
+
+### Running the Web GUI (Recommended)
+This version meets the bonus requirement for a graphical interface.
+
+**1. Start Player 1 (Host):**
+```bash
+python web_main.py --role host --udp-port 5000 --http-port 8000 --name Ash
+
+**2. Start Player 2 (Joiner):**
+```bash
+python web_main.py --role joiner --udp-port 5001 --http-port 8001 --host-port 5000 --name Gary
+
+**3. Start Spectator (Optional):**
+```bash
+python web_main.py --role spectator --udp-port 5002 --http-port 8002 --host-port 5000
+
+## AI Usage Disclaimer
+
+In accordance with the course policy, we acknowledge the use of AI tools (ChatGPT, GitHub Copilot) in the development of this project. These tools were primarily used for:
+- Generating initial socket boilerplate code.
+- Debugging threading and synchronization issues.
+- Formatting the protocol message structures.
+
+Verification: All AI-generated code was strictly reviewed, modified, and tested by the group members. We take full responsibility for the logic and functionality of the final submission.
